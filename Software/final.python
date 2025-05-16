@@ -1,0 +1,168 @@
+import tkinter as tk
+from tkinter import ttk
+import threading
+import time
+
+# --- MOCK GPIO for Windows Testing ---
+class MockGPIO:
+    BCM = 'BCM'
+    IN = 'IN'
+    OUT = 'OUT'
+    PUD_DOWN = 'PUD_DOWN'
+
+    def __init__(self):
+        self.states = {}
+
+    def setmode(self, mode): pass
+    def setup(self, pin, mode, pull_up_down=None): self.states[pin] = 0
+    def input(self, pin): return self.states.get(pin, 0)
+    def output(self, pin, state): self.states[pin] = state
+    def cleanup(self): pass
+
+GPIO = MockGPIO()
+
+# === Pin Assignments ===
+piano_pins = list(range(16, 25))  # GPIO 16–24
+kick_pin = 25                     # Kick Drum
+manual_toggle_pin = 26            # Manual mode toggle
+sw0_pin = 6                       # FM Enable/Disable (SW0)
+sw1_pin = 7                       # Waveform type toggle (SW1)
+
+GPIO.setmode(GPIO.BCM)
+for pin in piano_pins + [kick_pin, manual_toggle_pin, sw0_pin, sw1_pin]:
+    GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+# === GUI Setup ===
+root = tk.Tk()
+root.title("Instrument Control Panel")
+root.columnconfigure(0, weight=1)
+root.columnconfigure(1, weight=1)
+
+piano_buttons = {}
+drum_buttons = {}
+
+manual_mode_active = False
+fm_enabled = tk.StringVar(value="FM: Disabled")
+waveform_mode = tk.StringVar(value="Waveform: Sinewave")
+
+# === Waveform Simulation Functions ===
+def set_duty_cycle(pin, duty):
+    print(f"[WAVE] GPIO {pin}: Duty Cycle = {duty}%")
+
+def ramp_duty_cycle(pin):
+    for duty in range(0, 101, 10):
+        set_duty_cycle(pin, duty)
+        time.sleep(0.05)
+
+# === Piano Section ===
+piano_frame = ttk.LabelFrame(root, text="🎹 Piano Controls", padding=10)
+piano_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+def piano_key_pressed(index, pin):
+    current_waveform = GPIO.input(sw1_pin)  # 1 = Pulsewave (Square), 0 = Sinewave (Triangle)
+
+    if current_waveform:
+        print(f"[KEY] Piano {index + 1} pressed (GPIO {pin}) - Square")
+        set_duty_cycle(pin, 75)  # Square wave duty cycle
+    else:
+        print(f"[KEY] Piano {index + 1} pressed (GPIO {pin}) - Triangle")
+        threading.Thread(target=ramp_duty_cycle, args=(pin,), daemon=True).start()
+
+def piano_key_released(event, pin):
+    print(f"[KEY] Piano key released (GPIO {pin})")
+    set_duty_cycle(pin, 0)
+
+for i, pin in enumerate(piano_pins):
+    frame = ttk.Frame(piano_frame)
+    frame.pack(fill='x', pady=2)
+
+    label = ttk.Label(frame, text=f"Piano {i+1} (GPIO {pin})", width=18, anchor='w')
+    label.pack(side='left')
+
+    key_button = tk.Button(
+        frame,
+        text="🎵",
+        width=4,
+        height=1,
+        bg="white",
+        relief="raised"
+    )
+    key_button.bind("<ButtonPress-1>", lambda e, idx=i, p=pin: piano_key_pressed(idx, p))
+    key_button.bind("<ButtonRelease-1>", lambda e, p=pin: piano_key_released(e, p))
+    key_button.pack(side='right', padx=5)
+    piano_buttons[pin] = key_button
+
+# === Drum Section ===
+drum_frame = ttk.LabelFrame(root, text="🥁 Drum Controls", padding=10)
+drum_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
+
+def kick_pressed():
+    print("[DRUM] Kick Drum triggered (GPIO 25)")
+
+kick_btn = ttk.Button(
+    drum_frame,
+    text="Kick Drum (GPIO 25)",
+    command=kick_pressed
+)
+kick_btn.pack(fill='x', pady=5, padx=5)
+drum_buttons[kick_pin] = kick_btn
+
+# === Manual Mode Toggle (GPIO 26) ===
+def toggle_manual_mode():
+    global manual_mode_active
+    manual_mode_active = not manual_mode_active
+    GPIO.output(manual_toggle_pin, int(manual_mode_active))
+
+    if manual_mode_active:
+        print("[MODE] Manual mode ON – Kick button disabled")
+        kick_btn['state'] = 'disabled'
+        toggle_btn['text'] = "Manual Mode ON (GPIO 26)"
+    else:
+        print("[MODE] Manual mode OFF – Kick button enabled")
+        kick_btn['state'] = 'normal'
+        toggle_btn['text'] = "Manual Mode OFF (GPIO 26)"
+
+toggle_btn = ttk.Button(
+    drum_frame,
+    text="Manual Mode OFF (GPIO 26)",
+    command=toggle_manual_mode
+)
+toggle_btn.pack(fill='x', pady=5, padx=5)
+
+# === FM Toggle (GPIO 6) ===
+def toggle_fm():
+    current = GPIO.input(sw0_pin)
+    GPIO.output(sw0_pin, not current)
+    state = "Enabled" if not current else "Disabled"
+    fm_enabled.set(f"FM: {state}")
+    print(f"[TOGGLE] FM {state} (GPIO 6)")
+
+fm_toggle_btn = ttk.Button(
+    drum_frame,
+    text="Toggle FM Mode (GPIO 6)",
+    command=toggle_fm
+)
+fm_toggle_btn.pack(fill='x', pady=(5, 2), padx=5)
+
+# === Waveform Toggle (GPIO 7) ===
+def toggle_waveform():
+    current = GPIO.input(sw1_pin)
+    GPIO.output(sw1_pin, not current)
+    mode = "Pulsewave" if not current else "Sinewave"
+    waveform_mode.set(f"Waveform: {mode}")
+    print(f"[TOGGLE] Waveform set to {mode} (GPIO 7)")
+
+waveform_toggle_btn = ttk.Button(
+    drum_frame,
+    text="Toggle Waveform (GPIO 7)",
+    command=toggle_waveform
+)
+waveform_toggle_btn.pack(fill='x', pady=(0, 10), padx=5)
+
+# === Mode Labels ===
+ttk.Label(drum_frame, textvariable=fm_enabled, font=("Arial", 10, "bold")).pack(pady=(0, 2))
+ttk.Label(drum_frame, textvariable=waveform_mode, font=("Arial", 10, "bold")).pack()
+
+# === Run GUI ===
+root.mainloop()
+GPIO.cleanup()
